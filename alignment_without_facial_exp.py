@@ -82,7 +82,8 @@ def main():
     parser.add_argument(
         '--output_filename',
         type=str,
-        required=True,
+        required=False,
+        default='alignment_without_facial_exp.txt',
         help='Name of the output file'
     )
     

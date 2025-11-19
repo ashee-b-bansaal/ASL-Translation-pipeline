@@ -156,10 +156,9 @@ def find_ground_truth_translation(asl_sentence: str, translations: dict) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Send a prompt (or many from a file) to OpenAI and save answers to a text file.")
     parser.add_argument("--prompt", type=str, default=None, help="Single prompt string. If omitted and --input_file not set, read from stdin.")
-    parser.add_argument("--input_file", type=str, default=None, help="Path to aligned_sentences.txt; will send text after '-' in each line as the prompt.")
-    parser.add_argument("--output", type=str, default="openai_answer.txt", help="Path to output .txt file.")
+    parser.add_argument("--input_file", type=str, default=None, help="Path to input file. If filename contains 'alignment_without_facial_exp.txt', each line is ASL gloss. Otherwise, format is 'GROUND_TRUTH - ASL_GLOSS'.")
     parser.add_argument("--ground_truth_file", type=str, default="gnd_truth_translations.txt", help="Path to ground truth translations file.")
-    parser.add_argument("--comparison_output", type=str, default="ground_truth_vs_llm_comparison.txt", help="Path to comparison output file.")
+    parser.add_argument("--output", type=str, default="ground_truth_vs_llm_comparison.txt", help="Path to output file (format: ground_truth_translation - LLM_translation).")
     parser.add_argument("--model", type=str, default="gpt-4o-mini", help="OpenAI model, e.g., gpt-4o-mini.")
     parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature (0-2).")
     parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds.")
@@ -181,30 +180,39 @@ def main() -> None:
         ground_truth_translations = load_ground_truth_translations(args.ground_truth_file)
         print(f"Loaded {len(ground_truth_translations)} ground truth translations")
         
+        # Determine input format based on filename
+        input_filename = os.path.basename(args.input_file)
+        is_simple_format = "alignment_without_facial_exp.txt" in input_filename
+        
         total = 0
         success = 0
         with open(args.input_file, "r", encoding="utf-8") as fin, \
-             open(args.output, "a", encoding="utf-8") as fout, \
-             open(args.comparison_output, "w", encoding="utf-8") as fcomp:
+             open(args.output, "w", encoding="utf-8") as fout:
             
             for line in fin:
                 line = line.strip()
                 if not line:
                     continue
                 total += 1
-                # Expect format: "GROUND TRUTH - ALIGNED SENTENCE"
-                if " - " in line:
-                    try:
-                        ground_truth_part, after = line.split(" - ", 1)
-                    except ValueError:
-                        ground_truth_part = line
-                        after = line
-                else:
-                    ground_truth_part = line
-                    after = line
                 
-                prompt_text = after.strip()
-                ground_truth_clean = ground_truth_part.strip()
+                # Parse input based on file format
+                if is_simple_format:
+                    # Format: Just ASL gloss (no "GROUND_TRUTH - ASL_GLOSS")
+                    prompt_text = line.strip()
+                    asl_gloss_for_matching = prompt_text
+                else:
+                    # Format: "GROUND TRUTH - ALIGNED SENTENCE"
+                    if " - " in line:
+                        try:
+                            ground_truth_part, after = line.split(" - ", 1)
+                            prompt_text = after.strip()
+                            asl_gloss_for_matching = prompt_text  # Use the ASL part for matching
+                        except ValueError:
+                            prompt_text = line.strip()
+                            asl_gloss_for_matching = prompt_text
+                    else:
+                        prompt_text = line.strip()
+                        asl_gloss_for_matching = prompt_text
                 
                 try:
                     prompt1 = '''Imagine you are a sign language interpreter. You are an ASL translator converting gloss notation to natural English sentences.
@@ -316,20 +324,17 @@ def main() -> None:
                 except Exception as e:
                     answer = f"ERROR: {e}"
                 
-                # Log: prompt then answer, separated by a blank line
-                fout.write(prompt_text + "\n")
-                fout.write(answer + "\n\n")
+                # Find ground truth translation for the ASL gloss
+                ground_truth_translation = find_ground_truth_translation(asl_gloss_for_matching, ground_truth_translations)
                 
-                # Find ground truth translation and write comparison
-                ground_truth_translation = find_ground_truth_translation(ground_truth_clean, ground_truth_translations)
-                fcomp.write(f"{ground_truth_translation} - {answer}\n")
+                # Write single output file: ground_truth_translation - LLM_translation
+                fout.write(f"{ground_truth_translation} - {answer}\n")
                 
                 if total % 5 == 0:
                     print(f"Progress: {total} lines processed, {success} succeeded...")
         
         print(f"Processed {total} lines from {args.input_file}. Successful responses: {success}.")
-        print(f"Saved LLM responses to: {args.output}")
-        print(f"Saved ground truth vs LLM comparison to: {args.comparison_output}")
+        print(f"Saved output to: {args.output}")
         return
 
     # Single prompt mode
