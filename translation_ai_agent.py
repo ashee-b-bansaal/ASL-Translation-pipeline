@@ -242,7 +242,11 @@ def main() -> None:
         
         # Determine input format based on filename
         input_filename = os.path.basename(args.input_file)
-        is_simple_format = "alignment_without_facial_exp.txt" in input_filename
+        is_simple_format = (
+            "alignment_without_facial_exp.txt" in input_filename
+            or "alignment_without_LM.txt" in input_filename
+        )
+        stop_on_blank_line = "alignment_without_LM.txt" in input_filename
         
         total = 0
         success = 0
@@ -254,6 +258,9 @@ def main() -> None:
             for line in fin:
                 line = line.strip()
                 if not line:
+                    if stop_on_blank_line:
+                        print("Encountered blank line; stopping further processing.")
+                        break
                     continue
                 total += 1
                 
