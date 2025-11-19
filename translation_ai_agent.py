@@ -1,0 +1,360 @@
+import argparse
+import json
+import sys
+import os
+import urllib.request
+import urllib.error
+import time
+import socket
+import re
+
+
+# IMPORTANT: Set your OpenAI API key using one of these methods:
+# 1. Create a file named 'openai_api_key.txt' in the same directory as this script with just your API key
+# 2. Set environment variable: export OPENAI_API_KEY="sk-..."
+# 3. Set inline: OPENAI_API_KEY="sk-..." python translation_ai_agent.py ...
+
+def load_api_key():
+    """Load OpenAI API key from file or environment variable."""
+    # First, try to load from file
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    api_key_file = os.path.join(script_dir, "openai_api_key.txt")
+    
+    if os.path.exists(api_key_file):
+        try:
+            with open(api_key_file, 'r', encoding='utf-8') as f:
+                key = f.read().strip()
+                if key:
+                    return key
+        except Exception as e:
+            print(f"Warning: Could not read API key from file: {e}")
+    
+    # Fall back to environment variable
+    return os.getenv("OPENAI_API_KEY")
+
+OPENAI_API_KEY = load_api_key()
+
+
+def call_openai_chat(prompt: str, model: str = "gpt-4o-mini", temperature: float = 0.7, timeout: int = 20, retries: int = 3, backoff_sec: float = 2.0) -> str:
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Connection": "close",
+    }
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+    }
+
+    data = json.dumps(body).encode("utf-8")
+    last_err = None
+    for attempt in range(1, retries + 1):
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            socket.setdefaulttimeout(timeout)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resp_text = resp.read().decode("utf-8")
+                parsed = json.loads(resp_text)
+                try:
+                    return parsed["choices"][0]["message"]["content"].strip()
+                except Exception as e:
+                    raise RuntimeError(f"Unexpected API response: {json.dumps(parsed)[:1000]}") from e
+        except urllib.error.HTTPError as e:
+            err_text = e.read().decode("utf-8", errors="replace")
+            last_err = RuntimeError(f"OpenAI API HTTPError {e.code}: {err_text}")
+        except (urllib.error.URLError, socket.timeout, TimeoutError) as e:
+            last_err = RuntimeError(f"OpenAI API network/timeout error: {e}")
+        except Exception as e:
+            last_err = RuntimeError(f"OpenAI API unknown error: {e}")
+
+        if attempt < retries:
+            time.sleep(backoff_sec * attempt)
+        else:
+            if last_err:
+                raise last_err
+
+    raise RuntimeError("OpenAI API: exhausted retries")
+
+
+def load_ground_truth_translations(filepath: str) -> dict:
+    """Load ground truth translations and create a mapping from ASL gloss to English translation."""
+    translations = {}
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or ' → ' not in line:
+                continue
+            asl_part, english_part = line.split(' → ', 1)
+            # Clean up the ASL part (remove extra spaces, normalize)
+            asl_clean = ' '.join(asl_part.split())
+            translations[asl_clean] = english_part.strip()
+    return translations
+
+
+def normalize_spacing(text: str) -> str:
+    """Normalize spacing around parentheses, commas, and other punctuation."""
+    # Remove extra spaces around parentheses
+    text = re.sub(r'\s*\(\s*', '(', text)
+    text = re.sub(r'\s*\)\s*', ')', text)
+    # Remove extra spaces around commas
+    text = re.sub(r'\s*,\s*', ',', text)
+    # Normalize multiple spaces to single space
+    text = ' '.join(text.split())
+    return text
+
+
+def find_ground_truth_translation(asl_sentence: str, translations: dict) -> str:
+    """Find the ground truth translation for an ASL sentence."""
+    # Normalize the input sentence
+    asl_normalized = normalize_spacing(asl_sentence)
+    
+    # Try exact match first
+    if asl_sentence in translations:
+        return translations[asl_sentence]
+    if asl_normalized in translations:
+        return translations[asl_normalized]
+    
+    # Collect all potential matches with their similarity scores
+    potential_matches = []
+    
+    for key, value in translations.items():
+        key_normalized = normalize_spacing(key)
+        
+        # Exact match (highest priority)
+        if asl_normalized == key_normalized:
+            return value
+        
+        # Case-insensitive exact match (high priority)
+        if asl_normalized.lower() == key_normalized.lower():
+            return value
+        
+        # Calculate similarity score for partial matches
+        similarity_score = 0
+        
+        # Check if input is contained in key (prefer more specific matches)
+        if asl_normalized.lower() in key_normalized.lower():
+            similarity_score = len(asl_normalized) / len(key_normalized)
+            potential_matches.append((similarity_score, value))
+        
+        # Check if key is contained in input (less preferred)
+        elif key_normalized.lower() in asl_normalized.lower():
+            similarity_score = len(key_normalized) / len(asl_normalized) * 0.5  # Lower score
+            potential_matches.append((similarity_score, value))
+    
+    # Return the best match (highest similarity score)
+    if potential_matches:
+        # Sort by similarity score (descending) and return the best match
+        potential_matches.sort(key=lambda x: x[0], reverse=True)
+        return potential_matches[0][1]
+    
+    # If no match found, return a placeholder
+    return "GROUND_TRUTH_NOT_FOUND"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Send a prompt (or many from a file) to OpenAI and save answers to a text file.")
+    parser.add_argument("--prompt", type=str, default=None, help="Single prompt string. If omitted and --input_file not set, read from stdin.")
+    parser.add_argument("--input_file", type=str, default=None, help="Path to aligned_sentences.txt; will send text after '-' in each line as the prompt.")
+    parser.add_argument("--output", type=str, default="openai_answer.txt", help="Path to output .txt file.")
+    parser.add_argument("--ground_truth_file", type=str, default="gnd_truth_translations.txt", help="Path to ground truth translations file.")
+    parser.add_argument("--comparison_output", type=str, default="ground_truth_vs_llm_comparison.txt", help="Path to comparison output file.")
+    parser.add_argument("--model", type=str, default="gpt-4o-mini", help="OpenAI model, e.g., gpt-4o-mini.")
+    parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature (0-2).")
+    parser.add_argument("--timeout", type=int, default=20, help="Per-request timeout in seconds.")
+    parser.add_argument("--retries", type=int, default=3, help="Retry attempts per request.")
+    args = parser.parse_args()
+
+    if not OPENAI_API_KEY:
+        print("ERROR: Please set your OpenAI API key using one of these methods:")
+        print("1. Create a file 'openai_api_key.txt' in the same directory as this script")
+        print("   with just your API key (e.g., 'sk-proj-...')")
+        print("2. Set environment variable: export OPENAI_API_KEY='sk-...'")
+        print("3. Set inline: OPENAI_API_KEY='sk-...' python translation_ai_agent.py ...")
+        sys.exit(1)
+
+    # Batch mode: read aligned_sentences file and send the text after '-'
+    if args.input_file:
+        # Load ground truth translations
+        print("Loading ground truth translations...")
+        ground_truth_translations = load_ground_truth_translations(args.ground_truth_file)
+        print(f"Loaded {len(ground_truth_translations)} ground truth translations")
+        
+        total = 0
+        success = 0
+        with open(args.input_file, "r", encoding="utf-8") as fin, \
+             open(args.output, "a", encoding="utf-8") as fout, \
+             open(args.comparison_output, "w", encoding="utf-8") as fcomp:
+            
+            for line in fin:
+                line = line.strip()
+                if not line:
+                    continue
+                total += 1
+                # Expect format: "GROUND TRUTH - ALIGNED SENTENCE"
+                if " - " in line:
+                    try:
+                        ground_truth_part, after = line.split(" - ", 1)
+                    except ValueError:
+                        ground_truth_part = line
+                        after = line
+                else:
+                    ground_truth_part = line
+                    after = line
+                
+                prompt_text = after.strip()
+                ground_truth_clean = ground_truth_part.strip()
+                
+                try:
+                    prompt1 = '''Imagine you are a sign language interpreter. You are an ASL translator converting gloss notation to natural English sentences.
+                                
+                                Two most important rules: 
+                                1. Dont add any sign words that are not in the sentence.
+                                2. In sentences like "BOOK (raise) Classifier (mm) YOU BUY(th) AGAIN (raise)", 
+                                you need to associate the expression with the immeditae facial expression i.e., BUY and not with any prior or later word in the sentence.
+                                Notation Guide
+                                Non-Manual Markers (NMMs) - in parentheses after signs:
+
+                                (raise): Question/conditional clause
+                                (happy): Positive emotion
+                                (sad): Negative emotion/regret
+                                (angry): Frustration/emphasis
+                                (furrow): WH-question marker
+                                (shake): Negation ("don't/doesn't")
+
+                                Verb Modifiers:
+
+                                (cs): Recently completed ("recently")
+                                (th): Carelessly done ("carelessly/sloppily")
+                                (mm): Routine action ("normally/routinely/regularly")
+
+                                Classifiers: (mm) = medium-sized, (cha) = large-sized
+                                Translation Rules
+
+                                If (raise) is associated with the first/ second word of the sentence, it just means topicalisation but 
+                                if it anywhere else = Yes/No question or "if" conditional
+                                (furrow) + WHY = "Why" question
+                                (shake) = negation
+                                Reorder ASL Topic-Comment → English Subject-Verb-Object
+                                Integrate emotions and modifiers naturally (like below) 
+                                
+
+                                Example Translations
+                                BOOK (raise) Classifier (raise, mm) YOU BUY AGAIN → You bought the medium-size book again.
+                                BOOK (raise) Classifier (raise, cha) YOU (happy) BUY(happy) AGAIN(happy) → You bought the large-size book again.
+                                BOOK (raise) Classifier (raise, mm) YOU (angry) BUY(angry) AGAIN(raise) → Did you buy the medium-sized book again?
+                                BOOK (raise) Classifier (cha) YOU BUY(th) AGAIN (sad) → You carelessly bought the large-size book again.
+                                BOOK (raise) Classifier (mm) YOU BUY(cs) AGAIN (happy) → You recently bought the medium-size book again.
+                                BOOK (raise) Classifier (cha) YOU BUY(cs) AGAIN (angry) → You recently bought the large-size book again.
+                                BOOK (raise) Classifier (mm) YOU BUY(th) AGAIN (sad) → You carelessly bought the medium-size book again.
+                                BOOK (raise) Classifier (mm) YOU BUY(th) AGAIN (raise) → Did you carelessly buy the medium-sized book again?
+                                BOOK (raise) Classifier (cha) YOU BUY(cs) AGAIN → You recently bought the large-size book again.
+                                MY FATHER WANT(shake) SELL HIS CAR → My father don't want to sell his car
+                                MY FATHER WANT(shake) SELL HIS CAR (cha) → My father don't want to sell his large car
+                                MY FATHER WANT SELL(cs) HIS (happy) CAR (happy) → My father recently wants to sell his car
+                                MY FATHER WANT SELL HIS (angry) CAR (angry) → My father wants to sell his car
+                                MY FATHER WANT (sad) SELL (sad) HIS CAR (mm) → My father recently wants to sell his midium-size car
+                                MY FATHER WANT SELL (cs) HIS CAR (raise) → Does my father recently want to sell his car?
+                                MY FATHER (sad) WANT (sad) SELL (sad) HIS CAR (raise) → Does my father want to sell his car?
+                                MY FATHER (angry) WANT (angry) SELL (cs) HIS CAR (raise) → Does my father recently want to sell his car?
+                                MY FATHER (happy) WANT (happy) SELL (happy) HIS CAR (raise) → Does my father want to sell his car?
+                                I (rasie) DRIVE (rasie) HOME (rasie) FUTURE HE HAPPY (happy) → If I drive home, he will be happy
+                                I (rasie) DRIVE (rasie, th) HOME FUTURE HE angry (angry) → If I drive home carelessly, he will be angry
+                                I (rasie) DRIVE (rasie, mm) HOME FUTURE HE sad (sad) → If I drive home routinely, he will be sad
+                                I (rasie) DRIVE (rasie, cs) HOME FUTURE HE happy (happy) → If I drive home recently, he will be happy
+                                I (rasie) DRIVE (rasie) HOME (raise, cs) FUTURE HE angry (angry) → If I drive close-distance home, he will be angry
+                                I (rasie) DRIVE (rasie) HOME (rasie) FUTURE HE ANGRY (angry) → If I drive home, he will be angry
+                                I (rasie) DRIVE (rasie) HOME (rasie) FUTURE HE SAD (sad) → If I drive home, he will be sad
+                                MY FRIEND WANT GO-OUT IF(raise) STORE OPEN → My friend wants to go out if store is open
+                                MY FRIEND WANT GO-OUT (happy) IF(raise) STORE (cs) OPEN → My friend wants to go out if near store is open
+                                MY FRIEND WANT (shake) GO-OUT (sad) IF(raise) STORE (cha) CLOSE → My friend don't want to go out if the big store is closed.
+                                MY FRIEND WANT (shake) GO-OUT (angry) IF(raise) STORE (cha) CLOSE → My friend don't want to go out if the big store is closed.
+                                MY FRIEND WANT (shake) GO-OUT IF(raise) STORE (cha) CLOSE → My friend don't want to go out if the big store is closed.
+                                MY FRIEND WANT (shake) GO-OUT (mm) IF(raise) STORE (happy) OPEN (happy) → My friend don't want to go out regularly/routinely if the store opens.
+                                MY FRIEND WANT (shake) GO-OUT (cs) IF(raise) STORE (angry) CLOSE (angry) → My friend don't want to go out regularly/routinely if the store is closing soon.
+                                MY FRIEND WANT (shake) GO-OUT (sad) IF(raise) STORE CLOSE (cs) → My friend don't want to go out if the store is recently closed.
+                                HE HERE ALONE WHY (raise) YOU LEAVE → He is here alone because you leave
+                                HE HERE ALONE (happy) WHY (raise) YOU LEAVE → He is here alone because you leave
+                                HE HERE ALONE (sad) WHY (raise) YOU LEAVE → He is here alone because you leave
+                                HE HERE ALONE (angry) WHY (raise) YOU LEAVE (cs) → He is here alone because you leave recently
+                                HE HERE ALONE (sad) WHY (raise) YOU LEAVE (cs) → He is here alone because you leave recently
+                                HE HERE ALONE (happy) WHY (raise) YOU LEAVE (cs) → He is here alone because you leave recently
+                                HE HERE ALONE (angry) WHY (raise) YOU LEAVE (th) → He is here alone because you leave carelessly
+                                HE HERE ALONE (sad) WHY (raise) YOU LEAVE (th) → He is here alone because you leave carelessly
+                                HE HERE ALONE (happy) WHY (raise) YOU LEAVE (mm) → He is here alone because you leave routinely
+                                MY MOTHER ARRIVE LATE WHY (furrow) → Why did my mother arrive late?
+                                MY MOTHER ARRIVE (angry) LATE WHY (furrow) → Why did my mother arrive late?
+                                MY MOTHER ARRIVE (sad) LATE WHY (furrow) → Why did my mother arrive late?
+                                MY MOTHER ARRIVE (angry) LATE (cha) WHY (furrow) → Why did my mother arrive very late?
+                                MY MOTHER ARRIVE (sad) LATE (cha) WHY (furrow) → Why did my mother arrive very late?
+                                MY MOTHER ARRIVE (th) LATE WHY (furrow) → Why did my mother arrive late carelessly?
+                                MY MOTHER ARRIVE (th) LATE (angry) WHY (furrow) → Why did my mother arrive late carelessly?
+                                MY MOTHER ARRIVE (mm) LATE (angry) WHY (furrow) → Why did my mother arrive late normally?
+                                MY MOTHER ARRIVE (mm) LATE (sad) WHY (furrow) → Why did my mother arrive normally late?
+                                MY MOTHER ARRIVE (mm) LATE WHY (furrow) → Why did my mother arrive late?
+                                I HAPPY (happy) WHY (raise) MY SON HOMEWORK FINISH (cs) → I am happy because my son recenlty finished his homework.
+                                I HAPPY (happy) WHY (raise) MY SON HOMEWORK FINISH (mm) → I am happy because my son normally finished his homework.
+                                I HAPPY (happy) WHY (raise) MY SON HOMEWORK (cha) FINISH → I am happy because my son finished a lot of homework.
+                                I HAPPY (happy) WHY (raise) MY SON HOMEWORK (mm) FINISH → I am happy because my son finished his homework normally.
+                                I angry (angry) WHY (raise) MY SON HOMEWORK FINISH (th) → I am angry because my son sloppily finished his homework.
+                                I angry (angry) WHY (raise) MY SON HOMEWORK (cha) FINISH NOT-YET(th) → I am angry because my son hasn't yet finished a lot of homework, and he's doing it sloppily.
+                                I sad (sad) WHY (raise) MY SON HOMEWORK (cha) FINISH NOT-YET(th) → I am sad because my son hasn't yet finished a lot of homework, done in a sloppy manner.
+                                I sad (sad) WHY (raise) MY SON HOMEWORK FINISH (th) → I am sad because my son sloppily finished his homework.
+                                Task: Translate ASL gloss to fluent English capturing literal meaning and emotional/grammatical nuances. 
+                                I want you to strictly stick to the sentences. Pls dont add any sign words that are not in the sentence. 
+                                You can add extra words due to expressions, questions but pls not add any sign word not in the sentence.
+                                The sentence you need to trsanslate is: ''' + prompt_text
+                    answer = call_openai_chat(
+                        prompt=prompt1,
+                        model=args.model,
+                        temperature=args.temperature,
+                        timeout=args.timeout,
+                        retries=args.retries,
+                    )
+                    success += 1
+                except Exception as e:
+                    answer = f"ERROR: {e}"
+                
+                # Log: prompt then answer, separated by a blank line
+                fout.write(prompt_text + "\n")
+                fout.write(answer + "\n\n")
+                
+                # Find ground truth translation and write comparison
+                ground_truth_translation = find_ground_truth_translation(ground_truth_clean, ground_truth_translations)
+                fcomp.write(f"{ground_truth_translation} - {answer}\n")
+                
+                if total % 5 == 0:
+                    print(f"Progress: {total} lines processed, {success} succeeded...")
+        
+        print(f"Processed {total} lines from {args.input_file}. Successful responses: {success}.")
+        print(f"Saved LLM responses to: {args.output}")
+        print(f"Saved ground truth vs LLM comparison to: {args.comparison_output}")
+        return
+
+    # Single prompt mode
+    prompt = args.prompt
+    if prompt is None:
+        prompt = sys.stdin.read().strip()
+        if not prompt:
+            print("ERROR: No prompt provided via --prompt, --input_file, or stdin.")
+            sys.exit(1)
+
+    answer = call_openai_chat(
+        prompt=prompt,
+        model=args.model,
+        temperature=args.temperature,
+        timeout=args.timeout,
+        retries=args.retries,
+    )
+
+    with open(args.output, "w", encoding="utf-8") as f:
+        f.write(answer + "\n")
+
+    print(f"Saved answer to: {args.output}")
+
+
+if __name__ == "__main__":
+    main()
+
+

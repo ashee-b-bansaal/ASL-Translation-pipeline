@@ -1,0 +1,31 @@
+# OpenAI API Key (keep this secret!)
+**/openai_api_key.txt
+Penultimate/FInal_pipeline/openai_api_key.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.npy
+*.pkl
+training logs.zip
+

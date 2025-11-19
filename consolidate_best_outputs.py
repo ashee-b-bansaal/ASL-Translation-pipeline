@@ -3,6 +3,9 @@
 Script to consolidate best_outputs.txt files from all folds in order.
 Reads best_outputs.txt from each fold directory (fold_1, fold_2, ..., fold_10)
 and consolidates them into a single file in the order of the folds.
+
+Terminal command: 
+python consolidate_best_outputs.py root_directory_path --output-dir "output_directory_path"
 """
 
 import os
