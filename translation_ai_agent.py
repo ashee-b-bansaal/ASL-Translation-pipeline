@@ -7,6 +7,8 @@ import urllib.error
 import time
 import socket
 import re
+import math
+from collections import Counter
 
 
 # IMPORTANT: Set your OpenAI API key using one of these methods:
@@ -105,6 +107,64 @@ def normalize_spacing(text: str) -> str:
     return text
 
 
+def preprocess_text(text: str) -> str:
+    """Clean and preprocess text for BLEU calculation"""
+    # Remove extra whitespace and normalize
+    text = re.sub(r'\s+', ' ', text.strip())
+    # Remove special characters that might interfere with tokenization
+    text = re.sub(r'[^\w\s\?\.\!]', '', text)
+    return text
+
+
+def get_ngrams(tokens: list, n: int) -> list:
+    """Get n-grams from a list of tokens"""
+    return [tuple(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
+
+
+def calculate_bleu_score_simple(reference: str, hypothesis: str) -> float:
+    """Calculate BLEU score using simple implementation"""
+    # Tokenize
+    ref_tokens = reference.lower().split()
+    hyp_tokens = hypothesis.lower().split()
+    
+    if len(hyp_tokens) == 0:
+        return 0.0
+    
+    # Calculate precision for n-grams (1-4)
+    precisions = []
+    for n in range(1, 5):
+        ref_ngrams = get_ngrams(ref_tokens, n)
+        hyp_ngrams = get_ngrams(hyp_tokens, n)
+        
+        if len(hyp_ngrams) == 0:
+            precisions.append(0.0)
+            continue
+        
+        # Count matches
+        ref_counter = Counter(ref_ngrams)
+        hyp_counter = Counter(hyp_ngrams)
+        
+        matches = 0
+        for ngram in hyp_counter:
+            matches += min(hyp_counter[ngram], ref_counter[ngram])
+        
+        precision = matches / len(hyp_ngrams)
+        precisions.append(precision)
+    
+    # Calculate brevity penalty
+    if len(hyp_tokens) < len(ref_tokens):
+        bp = math.exp(1 - len(ref_tokens) / len(hyp_tokens))
+    else:
+        bp = 1.0
+    
+    # Calculate BLEU score
+    if any(p == 0 for p in precisions):
+        return 0.0
+    
+    bleu = bp * math.exp(sum(math.log(p) for p in precisions) / len(precisions))
+    return bleu
+
+
 def find_ground_truth_translation(asl_sentence: str, translations: dict) -> str:
     """Find the ground truth translation for an ASL sentence."""
     # Normalize the input sentence
@@ -186,6 +246,8 @@ def main() -> None:
         
         total = 0
         success = 0
+        bleu_scores = []  # Store BLEU scores for each translation pair
+        
         with open(args.input_file, "r", encoding="utf-8") as fin, \
              open(args.output, "w", encoding="utf-8") as fout:
             
@@ -197,9 +259,21 @@ def main() -> None:
                 
                 # Parse input based on file format
                 if is_simple_format:
-                    # Format: Just ASL gloss (no "GROUND_TRUTH - ASL_GLOSS")
-                    prompt_text = line.strip()
-                    asl_gloss_for_matching = prompt_text
+                    # Format: "Ground_truth_ASL_gloss - recognized_ASL"
+                    # Example: "MY FATHER WANT(sad) SELL(sad) HIS CAR(mm) - MY FATHER WANT SELL HIS CAR"
+                    if " - " in line:
+                        try:
+                            ground_truth_gloss, recognized_gloss = line.split(" - ", 1)
+                            prompt_text = recognized_gloss.strip()  # Send recognized ASL to AI
+                            asl_gloss_for_matching = ground_truth_gloss.strip()  # Use ground truth ASL for matching
+                        except ValueError:
+                            # If parsing fails, treat entire line as recognized ASL
+                            prompt_text = line.strip()
+                            asl_gloss_for_matching = line.strip()
+                    else:
+                        # No separator, treat entire line as recognized ASL
+                        prompt_text = line.strip()
+                        asl_gloss_for_matching = line.strip()
                 else:
                     # Format: "GROUND TRUTH - ALIGNED SENTENCE"
                     if " - " in line:
@@ -327,13 +401,39 @@ def main() -> None:
                 # Find ground truth translation for the ASL gloss
                 ground_truth_translation = find_ground_truth_translation(asl_gloss_for_matching, ground_truth_translations)
                 
+                # Calculate BLEU score if we have valid translations (skip if ground truth not found or error)
+                if ground_truth_translation != "GROUND_TRUTH_NOT_FOUND" and not answer.startswith("ERROR:"):
+                    try:
+                        ref_processed = preprocess_text(ground_truth_translation)
+                        hyp_processed = preprocess_text(answer)
+                        if ref_processed and hyp_processed:
+                            bleu_score = calculate_bleu_score_simple(ref_processed, hyp_processed)
+                            bleu_scores.append(bleu_score)
+                    except Exception as e:
+                        # If BLEU calculation fails, skip this pair
+                        pass
+                
                 # Write single output file: ground_truth_translation - LLM_translation
                 fout.write(f"{ground_truth_translation} - {answer}\n")
                 
                 if total % 5 == 0:
                     print(f"Progress: {total} lines processed, {success} succeeded...")
+            
+            # Calculate and append average BLEU score at the end
+            if bleu_scores:
+                avg_bleu = sum(bleu_scores) / len(bleu_scores)
+                fout.write("\n" + "=" * 80 + "\n")
+                fout.write("BLEU SCORE METRICS\n")
+                fout.write("=" * 80 + "\n")
+                fout.write(f"Number of translation pairs with valid BLEU scores: {len(bleu_scores)}\n")
+                fout.write(f"Average BLEU score: {avg_bleu:.4f}\n")
+                fout.write(f"Average BLEU score (percentage): {avg_bleu * 100:.2f}%\n")
+                fout.write("=" * 80 + "\n")
         
         print(f"Processed {total} lines from {args.input_file}. Successful responses: {success}.")
+        if bleu_scores:
+            avg_bleu = sum(bleu_scores) / len(bleu_scores)
+            print(f"Average BLEU score: {avg_bleu:.4f} ({avg_bleu * 100:.2f}%)")
         print(f"Saved output to: {args.output}")
         return
 
