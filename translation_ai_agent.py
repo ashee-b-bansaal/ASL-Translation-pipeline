@@ -245,8 +245,9 @@ def main() -> None:
         is_simple_format = (
             "alignment_without_facial_exp.txt" in input_filename
             or "alignment_without_LM.txt" in input_filename
+            or "alignment_with_LM.txt" in input_filename
         )
-        stop_on_blank_line = "alignment_without_LM.txt" in input_filename
+        stop_on_blank_line = "alignment_without_LM.txt" in input_filename or "alignment_with_LM.txt" in input_filename
         
         total = 0
         success = 0
