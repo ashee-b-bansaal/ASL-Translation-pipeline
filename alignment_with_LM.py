@@ -16,6 +16,42 @@ from collections import defaultdict
 import math
 
 
+def load_best_output_glosses(best_outputs_path: str) -> Dict[Tuple[str, int], str]:
+    """
+    Parse best_outputs.txt and build a lookup from (session, sample_index) to ground-truth gloss.
+    The expected format per line is:
+    GT_SEQ - PRED_SEQ <<<<< ... >>>> GLOSS ----- SESSION, SAMPLE_IDX
+    """
+    gloss_map: Dict[Tuple[str, int], str] = {}
+
+    if not best_outputs_path or not os.path.exists(best_outputs_path):
+        print(f"Warning: best_outputs file not found at {best_outputs_path}")
+        return gloss_map
+
+    with open(best_outputs_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                _, rhs = line.split(">>>>", 1)
+                gloss_part, meta_part = rhs.split("-----", 1)
+                gloss = gloss_part.strip()
+
+                session_sample = meta_part.strip()
+                if "," not in session_sample:
+                    continue
+                session_str, sample_idx_str = [s.strip() for s in session_sample.split(",", 1)]
+                sample_idx = int(sample_idx_str)
+                gloss_map[(session_str, sample_idx)] = gloss
+            except ValueError:
+                # Skip lines that don't match the expected structure
+                continue
+
+    return gloss_map
+
+
 class CTCProbabilityLoader:
     """Load and manage CTC probability matrices"""
     
@@ -157,9 +193,17 @@ class LanguageModelRescorer:
 class CorrectOptimalHybridAligner:
     """Correct optimal hybrid aligner - best of both worlds"""
     
-    def __init__(self, signs_dir: str, exprs_dir: str, sign_lm_path: str, expr_lm_path: str):
+    def __init__(
+        self,
+        signs_dir: str,
+        exprs_dir: str,
+        sign_lm_path: str,
+        expr_lm_path: str,
+        best_outputs_glosses: Optional[Dict[Tuple[str, int], str]] = None,
+    ):
         self.ctc_loader = CTCProbabilityLoader(signs_dir, exprs_dir)
         self.lm_rescorer = LanguageModelRescorer(sign_lm_path, expr_lm_path)
+        self.best_outputs_glosses = best_outputs_glosses or {}
     
     def enhance_sign_sequence_with_lm_only(self, sample_id: int) -> List[str]:
         """
@@ -317,6 +361,24 @@ class CorrectOptimalHybridAligner:
         
         return ' '.join(words)
     
+    def get_ground_truth_gloss(self, sample_id: int) -> Optional[str]:
+        """Retrieve ground truth gloss from best_outputs mapping via session/sample index metadata."""
+        metadata_source = None
+        if sample_id in self.ctc_loader.expr_samples:
+            metadata_source = self.ctc_loader.expr_samples[sample_id]['metadata']
+        elif sample_id in self.ctc_loader.sign_samples:
+            metadata_source = self.ctc_loader.sign_samples[sample_id]['metadata']
+        else:
+            return None
+
+        session = metadata_source.get('session')
+        sample_idx = metadata_source.get('sample_index')
+        if session is None or sample_idx is None:
+            return None
+
+        key = (str(session), int(sample_idx))
+        return self.best_outputs_glosses.get(key)
+    
     def remove_emotions_from_gloss(self, gloss: str) -> str:
         """Remove emotions (happy, sad, angry) from ASL gloss expressions in brackets"""
         # List of emotions to remove
@@ -410,6 +472,9 @@ class CorrectOptimalHybridAligner:
                 else:
                     gt_exprs = "sad,mm"  # Fallback
                 
+                gt_exprs_list = gt_exprs.split(',') if ',' in gt_exprs else [gt_exprs]
+                gt_gloss = self.get_ground_truth_gloss(i)
+                
                 # Enhance sign sequence using LM only (no probability matrices, no direct raw CTC output)
                 enhanced_signs = self.enhance_sign_sequence_with_lm_only(i)
                 
@@ -422,9 +487,11 @@ class CorrectOptimalHybridAligner:
                 # Remove emotions (happy, sad, angry) from the recognized sentence
                 enhanced_sentence = self.remove_emotions_from_gloss(enhanced_sentence)
                 
-                # Create ground truth aligned sentence
-                gt_exprs_list = gt_exprs.split(',') if ',' in gt_exprs else [gt_exprs]
-                gt_aligned_sentence = self.build_enhanced_aligned_sentence(gt_signs.split(','), gt_exprs_list)
+                # Create ground truth aligned sentence: prefer best_outputs gloss if available
+                if gt_gloss:
+                    gt_aligned_sentence = gt_gloss
+                else:
+                    gt_aligned_sentence = self.build_enhanced_aligned_sentence(gt_signs.split(','), gt_exprs_list)
                 
                 # Store enhanced alignment
                 enhanced_alignments.append({
@@ -471,6 +538,7 @@ def process_all_folds(signs_base_dir: str, exprs_base_dir: str, sign_lm_path: st
         
         signs_dir = os.path.join(signs_base_dir, signs_fold_name, "best_model_probability_matrices")
         exprs_dir = os.path.join(exprs_base_dir, fold_name, "best_model_probability_matrices")
+        expr_best_outputs_path = os.path.join(exprs_base_dir, fold_name, "best_outputs.txt")
         
         if not os.path.exists(signs_dir) or not os.path.exists(exprs_dir):
             print(f"Warning: Fold {fold_num} directories not found. Skipping...")
@@ -481,9 +549,18 @@ def process_all_folds(signs_base_dir: str, exprs_base_dir: str, sign_lm_path: st
         print(f"{'='*60}")
         print(f"Signs directory: {signs_dir}")
         print(f"Expressions directory: {exprs_dir}")
+        print(f"Expressions best outputs: {expr_best_outputs_path}")
+        
+        best_outputs_glosses = load_best_output_glosses(expr_best_outputs_path)
         
         # Create aligner for this fold
-        aligner = CorrectOptimalHybridAligner(signs_dir, exprs_dir, sign_lm_path, expr_lm_path)
+        aligner = CorrectOptimalHybridAligner(
+            signs_dir,
+            exprs_dir,
+            sign_lm_path,
+            expr_lm_path,
+            best_outputs_glosses=best_outputs_glosses,
+        )
         
         # Process all samples in this fold
         enhanced_alignments, _ = aligner.process_all_samples()

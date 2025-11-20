@@ -409,6 +409,7 @@ def main() -> None:
                 # Find ground truth translation for the ASL gloss
                 ground_truth_translation = find_ground_truth_translation(asl_gloss_for_matching, ground_truth_translations)
                 
+                bleu_score = None
                 # Calculate BLEU score if we have valid translations (skip if ground truth not found or error)
                 if ground_truth_translation != "GROUND_TRUTH_NOT_FOUND" and not answer.startswith("ERROR:"):
                     try:
@@ -417,12 +418,13 @@ def main() -> None:
                         if ref_processed and hyp_processed:
                             bleu_score = calculate_bleu_score_simple(ref_processed, hyp_processed)
                             bleu_scores.append(bleu_score)
-                    except Exception as e:
-                        # If BLEU calculation fails, skip this pair
-                        pass
+                    except Exception:
+                        bleu_score = None
                 
-                # Write single output file: ground_truth_translation - LLM_translation
-                fout.write(f"{ground_truth_translation} - {answer}\n")
+                bleu_display = f"{bleu_score:.4f}" if bleu_score is not None else "N/A"
+                
+                # Write single output file: ground_truth_translation - LLM_translation - BLEU score
+                fout.write(f"{ground_truth_translation} - {answer} - {bleu_display}\n")
                 
                 if total % 5 == 0:
                     print(f"Progress: {total} lines processed, {success} succeeded...")
