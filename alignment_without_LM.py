@@ -17,6 +17,24 @@ from pathlib import Path
 EMOTION_EXPRESSIONS = {"happy", "sad", "angry"}
 
 
+def remove_emotions_from_gloss(gloss: str) -> str:
+    """
+    Remove emotion-only expressions (happy, sad, angry) from a gloss string.
+    Preserves other expressions and drops empty parentheses.
+    """
+    pattern = r'(\S+)\(([^)]+)\)'
+
+    def clean(match):
+        sign = match.group(1)
+        exprs = [expr.strip() for expr in match.group(2).split(',')]
+        filtered = [expr for expr in exprs if expr.lower() not in EMOTION_EXPRESSIONS]
+        if not filtered:
+            return sign
+        return f"{sign}({','.join(filtered)})"
+
+    return re.sub(pattern, clean, gloss)
+
+
 def parse_file_line(line: str) -> Tuple[str, str, str, str, str, str]:
     """
     Parse a line from the data files.
@@ -522,7 +540,7 @@ def load_and_align_files(signs_file: str, exp_file: str, output_dir: str):
     print("Aligning samples...")
     results = []
     exact_matches = 0
-    proportional_scores = []
+    # Keep exact match count only (ground-truth cleansed of emotions)
     
     for key in common_keys:
         sign_info = signs_data[key]
@@ -530,6 +548,7 @@ def load_and_align_files(signs_file: str, exp_file: str, output_dir: str):
         
         # Get ground truth ASL gloss (from signs file - it has the complete ground truth)
         gt_gloss = sign_info['ground_truth_gloss']
+        clean_gt_gloss = remove_emotions_from_gloss(gt_gloss)
         
         # Align expressions to signs
         aligned_gloss = aligner.align(
@@ -538,19 +557,16 @@ def load_and_align_files(signs_file: str, exp_file: str, output_dir: str):
         )
         
         # Calculate metrics
-        exact_match = (gt_gloss == aligned_gloss)
+        exact_match = (clean_gt_gloss == aligned_gloss)
         if exact_match:
             exact_matches += 1
-        
-        proportional_score = calculate_proportional_match(gt_gloss, aligned_gloss)
-        proportional_scores.append(proportional_score)
         
         results.append({
             'key': key,
             'ground_truth_gloss': gt_gloss,
             'aligned_gloss': aligned_gloss,
             'exact_match': exact_match,
-            'proportional_score': proportional_score
+            'clean_ground_truth_gloss': clean_gt_gloss
         })
     
     # Create output directory if it doesn't exist
@@ -572,24 +588,14 @@ def load_and_align_files(signs_file: str, exp_file: str, output_dir: str):
         f.write("=" * 80 + "\n\n")
         
         exact_match_rate = exact_matches / len(results) if results else 0.0
-        avg_proportional_score = sum(proportional_scores) / len(proportional_scores) if proportional_scores else 0.0
         
-        f.write(f"1. Simple Exact Match Accuracy: {exact_matches}/{len(results)} ({100*exact_match_rate:.2f}%)\n")
+        f.write(f"Simple Exact Match Accuracy (emotions removed from GT): {exact_matches}/{len(results)} ({100*exact_match_rate:.2f}%)\n")
         f.write(f"   - Exact match: {exact_matches}\n")
         f.write(f"   - Total samples: {len(results)}\n")
-        f.write(f"   - Accuracy: {100*exact_match_rate:.2f}%\n\n")
-        
-        f.write(f"2. Proportional ASL Gloss Match Accuracy: {100*avg_proportional_score:.2f}%\n")
-        f.write(f"   - Average proportional score: {avg_proportional_score:.4f}\n")
-        f.write(f"   - This metric:\n")
-        f.write(f"     * Rewards correct signs at correct positions (60% weight)\n")
-        f.write(f"     * Rewards correct expressions at correct positions (40% weight)\n")
-        f.write(f"     * Penalizes misalignment and missing/extra tokens\n")
-        f.write(f"     * Score range: 0.0 (no match) to 1.0 (perfect match)\n")
+        f.write(f"   - Accuracy: {100*exact_match_rate:.2f}%\n")
     
     print(f"\nDone! Processed {len(results)} samples")
     print(f"Simple Exact Match Accuracy: {exact_matches}/{len(results)} ({100*exact_match_rate:.2f}%)")
-    print(f"Proportional Match Accuracy: {100*avg_proportional_score:.2f}%")
     print(f"Output file: {output_file}")
 
 

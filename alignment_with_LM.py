@@ -527,23 +527,53 @@ class CorrectOptimalHybridAligner:
 
 def process_all_folds(signs_base_dir: str, exprs_base_dir: str, sign_lm_path: str, expr_lm_path: str, output_file: str):
     """
-    Process all 10 folds and combine results into a single output file
+    Process all folds discovered under the provided base directories and combine results
+    into a single output file.
     """
-    all_alignments = []
-    
-    # Process folds 1-10 in order
-    for fold_num in range(1, 11):
-        fold_name = f"140_70_None_all_ch4_poi300350_w16080_k10_fold_{fold_num}"
-        signs_fold_name = f"140_70_None_signs_ch4_poi300350_w16080_k10_fold_{fold_num}"
-        
-        signs_dir = os.path.join(signs_base_dir, signs_fold_name, "best_model_probability_matrices")
-        exprs_dir = os.path.join(exprs_base_dir, fold_name, "best_model_probability_matrices")
-        expr_best_outputs_path = os.path.join(exprs_base_dir, fold_name, "best_outputs.txt")
-        
-        if not os.path.exists(signs_dir) or not os.path.exists(exprs_dir):
-            print(f"Warning: Fold {fold_num} directories not found. Skipping...")
+
+    def discover_fold_dirs(base_dir: str) -> Dict[int, str]:
+        """Return mapping fold_number -> absolute path for each *_fold_* directory."""
+        fold_dirs: Dict[int, str] = {}
+        if not os.path.isdir(base_dir):
+            print(f"Warning: Base directory not found: {base_dir}")
+            return fold_dirs
+        for entry in os.listdir(base_dir):
+            entry_path = os.path.join(base_dir, entry)
+            if not os.path.isdir(entry_path):
+                continue
+            match = re.search(r'fold_(\d+)', entry)
+            if match:
+                fold_num = int(match.group(1))
+                fold_dirs[fold_num] = entry_path
+        return fold_dirs
+
+    sign_fold_dirs = discover_fold_dirs(signs_base_dir)
+    expr_fold_dirs = discover_fold_dirs(exprs_base_dir)
+
+    all_alignments: List[Dict] = []
+    available_folds = sorted(set(sign_fold_dirs.keys()) & set(expr_fold_dirs.keys()))
+
+    if not available_folds:
+        print("No common fold directories found between signs and expressions. Nothing to process.")
+        return
+
+    for fold_num in available_folds:
+        sign_fold_path = sign_fold_dirs[fold_num]
+        expr_fold_path = expr_fold_dirs[fold_num]
+
+        signs_dir = os.path.join(sign_fold_path, "best_model_probability_matrices")
+        exprs_dir = os.path.join(expr_fold_path, "best_model_probability_matrices")
+        expr_best_outputs_path = os.path.join(expr_fold_path, "best_outputs.txt")
+
+        missing = []
+        if not os.path.exists(signs_dir):
+            missing.append(f"sign probability matrices at {signs_dir}")
+        if not os.path.exists(exprs_dir):
+            missing.append(f"expression probability matrices at {exprs_dir}")
+        if missing:
+            print(f"Warning: Fold {fold_num} missing {' & '.join(missing)}. Skipping...")
             continue
-        
+
         print(f"\n{'='*60}")
         print(f"Processing Fold {fold_num}")
         print(f"{'='*60}")
@@ -641,7 +671,7 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default="Penultimate/final_pipeline_txt/alignment/alignment_with_LM.txt",
+        default="Penultimate/final_pipeline_txt_220110/alignment/alignment_with_LM.txt",
         help="Output file path (single file with all folds combined)"
     )
     

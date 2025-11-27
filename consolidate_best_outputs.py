@@ -75,8 +75,8 @@ def main():
     parser.add_argument(
         '--output-filename',
         type=str,
-        default='exp_best_outputs.txt',
-        help='Output filename (default: exp_best_outputs.txt)'
+        default='sign_best_outputs.txt',
+        help='Output filename (default: sign_best_outputs.txt)'
     )
     
     args = parser.parse_args()

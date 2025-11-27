@@ -297,39 +297,156 @@ def main() -> None:
                         asl_gloss_for_matching = prompt_text
                 
                 try:
-                    prompt1 = '''Imagine you are a sign language interpreter. You are an ASL translator converting gloss notation to natural English sentences.
+                    # prompt1 = '''Imagine you are a sign language interpreter. You are an ASL translator converting gloss notation to natural English sentences.
                                 
-                                Two most important rules: 
-                                1. Dont add any sign words that are not in the sentence.
-                                2. In sentences like "BOOK (raise) Classifier (mm) YOU BUY(th) AGAIN (raise)", 
-                                you need to associate the expression with the immeditae facial expression i.e., BUY and not with any prior or later word in the sentence.
-                                Notation Guide
-                                Non-Manual Markers (NMMs) - in parentheses after signs:
+                    #             Two most important rules: 
+                    #             1. Dont add any sign words that are not in the sentence.
+                    #             2. In sentences like "BOOK (raise) Classifier (mm) YOU BUY(th) AGAIN (raise)", 
+                    #             you need to associate the expression with the immeditae facial expression i.e., BUY and not with any prior or later word in the sentence.
+                    #             Notation Guide
+                    #             Non-Manual Markers (NMMs) - in parentheses after signs:
 
-                                (raise): Question/conditional clause
-                                (happy): Positive emotion
-                                (sad): Negative emotion/regret
-                                (angry): Frustration/emphasis
-                                (furrow): WH-question marker
-                                (shake): Negation ("don't/doesn't")
+                    #             (raise): Question/conditional clause
+                    #             (happy): Positive emotion
+                    #             (sad): Negative emotion/regret
+                    #             (angry): Frustration/emphasis
+                    #             (furrow): WH-question marker
+                    #             (shake): Negation ("don't/doesn't")
+
+                    #             Verb Modifiers:
+
+                    #             (cs): Recently completed ("recently")
+                    #             (th): Carelessly done ("carelessly/sloppily")
+                    #             (mm): Routine action ("normally/routinely/regularly")
+
+                    #             Classifiers: (mm) = medium-sized, (cha) = large-sized
+                    #             Translation Rules
+
+                    #             If (raise) is associated with the first/ second word of the sentence, it just means topicalisation but 
+                    #             if it anywhere else = Yes/No question or "if" conditional
+                    #             (furrow) + WHY = "Why" question
+                    #             (shake) = negation
+                    #             Reorder ASL Topic-Comment → English Subject-Verb-Object
+                    #             Integrate emotions and modifiers naturally (like below) 
+                                
+
+                    #             Example Translations
+                    #             BOOK (raise) Classifier (raise, mm) YOU BUY AGAIN → You bought the medium-size book again.
+                    #             BOOK (raise) Classifier (raise, cha) YOU (happy) BUY(happy) AGAIN(happy) → You bought the large-size book again.
+                    #             BOOK (raise) Classifier (raise, mm) YOU (angry) BUY(angry) AGAIN(raise) → Did you buy the medium-sized book again?
+                    #             BOOK (raise) Classifier (cha) YOU BUY(th) AGAIN (sad) → You carelessly bought the large-size book again.
+                    #             BOOK (raise) Classifier (mm) YOU BUY(cs) AGAIN (happy) → You recently bought the medium-size book again.
+                    #             BOOK (raise) Classifier (cha) YOU BUY(cs) AGAIN (angry) → You recently bought the large-size book again.
+                    #             BOOK (raise) Classifier (mm) YOU BUY(th) AGAIN (sad) → You carelessly bought the medium-size book again.
+                    #             BOOK (raise) Classifier (mm) YOU BUY(th) AGAIN (raise) → Did you carelessly buy the medium-sized book again?
+                    #             BOOK (raise) Classifier (cha) YOU BUY(cs) AGAIN → You recently bought the large-size book again.
+                    #             MY FATHER WANT(shake) SELL HIS CAR → My father don't want to sell his car
+                    #             MY FATHER WANT(shake) SELL HIS CAR (cha) → My father don't want to sell his large car
+                    #             MY FATHER WANT SELL(cs) HIS (happy) CAR (happy) → My father recently wants to sell his car
+                    #             MY FATHER WANT SELL HIS (angry) CAR (angry) → My father wants to sell his car
+                    #             MY FATHER WANT (sad) SELL (sad) HIS CAR (mm) → My father recently wants to sell his midium-size car
+                    #             MY FATHER WANT SELL (cs) HIS CAR (raise) → Does my father recently want to sell his car?
+                    #             MY FATHER (sad) WANT (sad) SELL (sad) HIS CAR (raise) → Does my father want to sell his car?
+                    #             MY FATHER (angry) WANT (angry) SELL (cs) HIS CAR (raise) → Does my father recently want to sell his car?
+                    #             MY FATHER (happy) WANT (happy) SELL (happy) HIS CAR (raise) → Does my father want to sell his car?
+                    #             I (rasie) DRIVE (rasie) HOME (rasie) FUTURE HE HAPPY (happy) → If I drive home, he will be happy
+                    #             I (rasie) DRIVE (rasie, th) HOME FUTURE HE angry (angry) → If I drive home carelessly, he will be angry
+                    #             I (rasie) DRIVE (rasie, mm) HOME FUTURE HE sad (sad) → If I drive home routinely, he will be sad
+                    #             I (rasie) DRIVE (rasie, cs) HOME FUTURE HE happy (happy) → If I drive home recently, he will be happy
+                    #             I (rasie) DRIVE (rasie) HOME (raise, cs) FUTURE HE angry (angry) → If I drive close-distance home, he will be angry
+                    #             I (rasie) DRIVE (rasie) HOME (rasie) FUTURE HE ANGRY (angry) → If I drive home, he will be angry
+                    #             I (rasie) DRIVE (rasie) HOME (rasie) FUTURE HE SAD (sad) → If I drive home, he will be sad
+                    #             MY FRIEND WANT GO-OUT IF(raise) STORE OPEN → My friend wants to go out if store is open
+                    #             MY FRIEND WANT GO-OUT (happy) IF(raise) STORE (cs) OPEN → My friend wants to go out if near store is open
+                    #             MY FRIEND WANT (shake) GO-OUT (sad) IF(raise) STORE (cha) CLOSE → My friend don't want to go out if the big store is closed.
+                    #             MY FRIEND WANT (shake) GO-OUT (angry) IF(raise) STORE (cha) CLOSE → My friend don't want to go out if the big store is closed.
+                    #             MY FRIEND WANT (shake) GO-OUT IF(raise) STORE (cha) CLOSE → My friend don't want to go out if the big store is closed.
+                    #             MY FRIEND WANT (shake) GO-OUT (mm) IF(raise) STORE (happy) OPEN (happy) → My friend don't want to go out regularly/routinely if the store opens.
+                    #             MY FRIEND WANT (shake) GO-OUT (cs) IF(raise) STORE (angry) CLOSE (angry) → My friend don't want to go out regularly/routinely if the store is closing soon.
+                    #             MY FRIEND WANT (shake) GO-OUT (sad) IF(raise) STORE CLOSE (cs) → My friend don't want to go out if the store is recently closed.
+                    #             HE HERE ALONE WHY (raise) YOU LEAVE → He is here alone because you leave
+                    #             HE HERE ALONE (happy) WHY (raise) YOU LEAVE → He is here alone because you leave
+                    #             HE HERE ALONE (sad) WHY (raise) YOU LEAVE → He is here alone because you leave
+                    #             HE HERE ALONE (angry) WHY (raise) YOU LEAVE (cs) → He is here alone because you leave recently
+                    #             HE HERE ALONE (sad) WHY (raise) YOU LEAVE (cs) → He is here alone because you leave recently
+                    #             HE HERE ALONE (happy) WHY (raise) YOU LEAVE (cs) → He is here alone because you leave recently
+                    #             HE HERE ALONE (angry) WHY (raise) YOU LEAVE (th) → He is here alone because you leave carelessly
+                    #             HE HERE ALONE (sad) WHY (raise) YOU LEAVE (th) → He is here alone because you leave carelessly
+                    #             HE HERE ALONE (happy) WHY (raise) YOU LEAVE (mm) → He is here alone because you leave routinely
+                    #             MY MOTHER ARRIVE LATE WHY (furrow) → Why did my mother arrive late?
+                    #             MY MOTHER ARRIVE (angry) LATE WHY (furrow) → Why did my mother arrive late?
+                    #             MY MOTHER ARRIVE (sad) LATE WHY (furrow) → Why did my mother arrive late?
+                    #             MY MOTHER ARRIVE (angry) LATE (cha) WHY (furrow) → Why did my mother arrive very late?
+                    #             MY MOTHER ARRIVE (sad) LATE (cha) WHY (furrow) → Why did my mother arrive very late?
+                    #             MY MOTHER ARRIVE (th) LATE WHY (furrow) → Why did my mother arrive late carelessly?
+                    #             MY MOTHER ARRIVE (th) LATE (angry) WHY (furrow) → Why did my mother arrive late carelessly?
+                    #             MY MOTHER ARRIVE (mm) LATE (angry) WHY (furrow) → Why did my mother arrive late normally?
+                    #             MY MOTHER ARRIVE (mm) LATE (sad) WHY (furrow) → Why did my mother arrive normally late?
+                    #             MY MOTHER ARRIVE (mm) LATE WHY (furrow) → Why did my mother arrive late?
+                    #             I HAPPY (happy) WHY (raise) MY SON HOMEWORK FINISH (cs) → I am happy because my son recenlty finished his homework.
+                    #             I HAPPY (happy) WHY (raise) MY SON HOMEWORK FINISH (mm) → I am happy because my son normally finished his homework.
+                    #             I HAPPY (happy) WHY (raise) MY SON HOMEWORK (cha) FINISH → I am happy because my son finished a lot of homework.
+                    #             I HAPPY (happy) WHY (raise) MY SON HOMEWORK (mm) FINISH → I am happy because my son finished his homework normally.
+                    #             I angry (angry) WHY (raise) MY SON HOMEWORK FINISH (th) → I am angry because my son sloppily finished his homework.
+                    #             I angry (angry) WHY (raise) MY SON HOMEWORK (cha) FINISH NOT-YET(th) → I am angry because my son hasn't yet finished a lot of homework, and he's doing it sloppily.
+                    #             I sad (sad) WHY (raise) MY SON HOMEWORK (cha) FINISH NOT-YET(th) → I am sad because my son hasn't yet finished a lot of homework, done in a sloppy manner.
+                    #             I sad (sad) WHY (raise) MY SON HOMEWORK FINISH (th) → I am sad because my son sloppily finished his homework.
+                    #             Task: Translate ASL gloss to fluent English capturing literal meaning and emotional/grammatical nuances. 
+                    #             I want you to strictly stick to the sentences. Pls dont add any sign words that are not in the sentence. 
+                    #             You can add extra words due to expressions, questions but pls not add any sign word not in the sentence.
+                    #             The sentence you need to trsanslate is: ''' + prompt_text
+                    prompt1 = ''' You are an ASL interpreter translating gloss notation to natural English. Follow these rules precisely:
+                                CRITICAL RULES that need to be followed:
+                                Never add sign words not present in the original gloss
+                                Associate non-manual markers (NMMs) with their immediate sign only - not preceding or following signs
+                                Only add grammatical words (articles, auxiliary verbs) required for natural English
+                                Non-Manual Markers (NMMs):
+                                Facial Expressions (after signs):
+                                (raise) on 1st/2nd word = topicalization | elsewhere = yes/no question or "if" conditional or because clause
+                                (happy) = positive emotion
+                                (sad) = negative emotion/regret
+                                (angry) = frustration/strong emotion
+                                (furrow) = WH-question marker (with WHY/WHO/WHAT/etc.)
+                                (shake) = negation ("don't/doesn't/didn't")
 
                                 Verb Modifiers:
+                                (cs) = recently/just completed
+                                (th) = carelessly/sloppily
+                                (mm) = routinely/normally/regularly
 
-                                (cs): Recently completed ("recently")
-                                (th): Carelessly done ("carelessly/sloppily")
-                                (mm): Routine action ("normally/routinely/regularly")
+                                Size Classifiers:
+                                (mm) = medium-sized
+                                (cha) = large-sized/very/a lot
 
-                                Classifiers: (mm) = medium-sized, (cha) = large-sized
-                                Translation Rules
+                                Translation Guidelines:
+                                Question Formation:
+                                    (raise) at sentence end = yes/no question
+                                    WHY (furrow) = "Why...?" question
+                                    WHY (raise) = "because" (reason clause)
+                                Conditionals:
+                                    IF(raise) = conditional "if"
+                                Negation:
+                                    (shake) on any sign = negate that verb ("don't/doesn't/didn't")
+                                Word Order:
+                                    Convert ASL topic-comment structure to English subject-verb-object
+                                    Topicalized elements (first word with (raise)) become natural English subjects
 
-                                If (raise) is associated with the first/ second word of the sentence, it just means topicalisation but 
-                                if it anywhere else = Yes/No question or "if" conditional
-                                (furrow) + WHY = "Why" question
-                                (shake) = negation
-                                Reorder ASL Topic-Comment → English Subject-Verb-Object
-                                Integrate emotions and modifiers naturally (like below) 
+                                Modifiers:
+                                    Integrate (cs), (th), (mm) as adverbs modifying their immediate verb
+                                    Apply classifiers (mm), (cha) as adjectives (medium-sized, large, a lot of)
+                                    Emotional markers apply to their immediate sign - reflect overall sentence tone naturally
+                                Examples:
+                                Basic Questions: BOOK (raise) Classifier (mm) YOU BUY(th) AGAIN (raise) → "Did you carelessly buy the medium-sized book again?"
+                                Negation: MY FATHER WANT(shake) SELL HIS CAR → "My father doesn't want to sell his car"
+                                Conditionals: I (raise) DRIVE (raise, th) HOME FUTURE HE ANGRY (angry) → "If I drive home carelessly, he will be angry"
+                                    MY FRIEND WANT(shake) GO-OUT IF(raise) STORE (cha) CLOSE → "My friend doesn't want to go out if the big store is closed"
+                                Reason Clauses: I HAPPY (happy) WHY (raise) MY SON HOMEWORK FINISH (cs) → "I am happy because my son recently finished his homework"
+                                    HE HERE ALONE WHY (raise) YOU LEAVE (th) → "He is here alone because you left carelessly"
+                                WH-Questions: MY MOTHER ARRIVE (th) LATE (angry) WHY (furrow) → "Why did my mother arrive late carelessly?"
                                 
-
+                                Output: Provide only the fluent English translation. Capture all grammatical and emotional nuances without adding signs not in the original gloss.
+                                
+                                Further examples you should analyse and stick to:
                                 Example Translations
                                 BOOK (raise) Classifier (raise, mm) YOU BUY AGAIN → You bought the medium-size book again.
                                 BOOK (raise) Classifier (raise, cha) YOU (happy) BUY(happy) AGAIN(happy) → You bought the large-size book again.
@@ -395,6 +512,7 @@ def main() -> None:
                                 I want you to strictly stick to the sentences. Pls dont add any sign words that are not in the sentence. 
                                 You can add extra words due to expressions, questions but pls not add any sign word not in the sentence.
                                 The sentence you need to trsanslate is: ''' + prompt_text
+
                     answer = call_openai_chat(
                         prompt=prompt1,
                         model=args.model,
