@@ -122,6 +122,8 @@ class LanguageModelRescorer:
         self.expr_associations = {}
         self.sign_vocabulary = set()
         self.expr_vocabulary = set()
+        # Case-insensitive lookup map: uppercase sign -> original sign
+        self.sign_case_map = {}
         self.load_models(sign_lm_path, expr_lm_path)
     
     def load_models(self, sign_lm_path: str, expr_lm_path: str):
@@ -172,6 +174,9 @@ class LanguageModelRescorer:
                     continue
                     
                 sign_word = row[0]
+                # Build case-insensitive lookup map
+                self.sign_case_map[sign_word.upper()] = sign_word
+                
                 for i, expression in enumerate(header[1:], 1):
                     if i < len(row):
                         prob = float(row[i])
@@ -207,7 +212,8 @@ class CorrectOptimalHybridAligner:
     
     def enhance_sign_sequence_with_lm_only(self, sample_id: int) -> List[str]:
         """
-        Apply LM model for signs (no probability matrices, no direct raw CTC output)
+        Apply LM model for signs using CTC probability matrices with language model rescoring.
+        Uses proper CTC collapse rules and log-space probability combination.
         """
         sign_probs = self.ctc_loader.get_sign_probabilities(sample_id)
         sign_vocab = self.ctc_loader.get_sign_vocabulary(sample_id)
@@ -220,57 +226,89 @@ class CorrectOptimalHybridAligner:
         blank_idx = len(sign_vocab)
         
         # Initialize beam search
-        beam = [([], 0.0)]  # (sequence, log_prob)
+        # Use dict to properly merge duplicate sequences (CTC collapse rule)
+        beam_dict = {tuple([]): 0.0}  # (sequence_tuple, log_prob)
         
         for t in range(sign_probs.shape[0]):
-            new_beam = []
+            new_beam_dict = {}
             
-            for sequence, log_prob in beam:
-                # Consider all possible signs
-                for sign_idx, sign in enumerate(full_vocab):
-                    if sign == '<BLANK>':
-                        # Blank token - no change to sequence
-                        new_beam.append((sequence, log_prob + math.log(sign_probs[t, sign_idx])))
+            for sequence_tuple, log_prob in beam_dict.items():
+                sequence = list(sequence_tuple)
+                last_token = sequence[-1] if sequence else None
+                
+                # First, handle blank token (no change to sequence)
+                blank_log_prob = log_prob + math.log(sign_probs[t, blank_idx] + 1e-10)
+                seq_key = tuple(sequence)
+                if seq_key in new_beam_dict:
+                    # Log-sum-exp for merging probabilities (numerically stable)
+                    max_prob = max(new_beam_dict[seq_key], blank_log_prob)
+                    new_beam_dict[seq_key] = max_prob + math.log(
+                        math.exp(new_beam_dict[seq_key] - max_prob) + 
+                        math.exp(blank_log_prob - max_prob)
+                    )
+                else:
+                    new_beam_dict[seq_key] = blank_log_prob
+                
+                # Then, handle all non-blank tokens
+                for sign_idx in range(len(sign_vocab)):
+                    sign = sign_vocab[sign_idx]
+                    
+                    # CTC collapse rule: skip if same as last token
+                    if last_token == sign:
+                        continue  # Don't add duplicate token (CTC collapse)
+                    
+                    # Get CTC probability
+                    ctc_log_prob = math.log(sign_probs[t, sign_idx] + 1e-10)
+                    
+                    # Get LM transition probability (bigram: previous word -> current word)
+                    context = last_token if last_token else ""
+                    lm_prob = self.lm_rescorer.get_sign_transition_prob(context, sign)
+                    
+                    # If no LM probability, use a small default
+                    if lm_prob == 0.0:
+                        lm_log_prob = math.log(0.001)
                     else:
-                        if sign_idx < len(sign_vocab):
-                            # Get CTC probability
-                            ctc_prob = sign_probs[t, sign_idx]
-                            
-                            # Get LM transition probability
-                            context = sequence[-1] if sequence else ""
-                            lm_prob = self.lm_rescorer.get_sign_transition_prob(context, sign)
-                            
-                            # If no LM probability, use a small default
-                            if lm_prob == 0.0:
-                                lm_prob = 0.001
-                            
-                            # Combine CTC and LM probabilities
-                            alpha = 0.7  # Weight for CTC probability
-                            beta = 0.3   # Weight for LM probability
-                            
-                            combined_prob = alpha * ctc_prob + beta * lm_prob
-                            new_log_prob = log_prob + math.log(combined_prob)
-                            
-                            # Add to sequence if not duplicate
-                            if not sequence or sequence[-1] != sign:
-                                new_sequence = sequence + [sign]
-                            else:
-                                new_sequence = sequence
-                            
-                            new_beam.append((new_sequence, new_log_prob))
+                        lm_log_prob = math.log(lm_prob)
+                    
+                    # Combine CTC and LM probabilities in log space
+                    # Weighted combination: alpha * log(CTC) + beta * log(LM)
+                    # This is equivalent to: log(CTC^alpha * LM^beta)
+                    alpha = 0.7  # Weight for CTC probability
+                    beta = 0.3   # Weight for LM probability
+                    
+                    combined_log_prob = alpha * ctc_log_prob + beta * lm_log_prob
+                    new_log_prob = log_prob + combined_log_prob
+                    
+                    # Add token to sequence (already checked for duplicates above)
+                    new_sequence = sequence + [sign]
+                    
+                    # Merge sequences with same content
+                    seq_key = tuple(new_sequence)
+                    if seq_key in new_beam_dict:
+                        # Log-sum-exp for merging probabilities (numerically stable)
+                        max_prob = max(new_beam_dict[seq_key], new_log_prob)
+                        new_beam_dict[seq_key] = max_prob + math.log(
+                            math.exp(new_beam_dict[seq_key] - max_prob) + 
+                            math.exp(new_log_prob - max_prob)
+                        )
+                    else:
+                        new_beam_dict[seq_key] = new_log_prob
             
-            # Keep top beam_size candidates
-            new_beam.sort(key=lambda x: x[1], reverse=True)
-            beam = new_beam[:10]  # Larger beam for signs
+            # Convert back to list and keep top beam_size candidates
+            beam = [(list(seq), prob) for seq, prob in new_beam_dict.items()]
+            beam.sort(key=lambda x: x[1], reverse=True)
+            beam_dict = {tuple(seq): prob for seq, prob in beam[:10]}  # Larger beam for signs
         
         # Return best sequence
-        if beam:
-            return beam[0][0]
+        if beam_dict:
+            best_seq = max(beam_dict.items(), key=lambda x: x[1])[0]
+            return list(best_seq)
         return []
     
     def rescore_expression_sequence_with_original_optimal_approach(self, sample_id: int, sign_sequence: List[str]) -> List[str]:
         """
-        Apply same approach as original optimal_hybrid_aligner.py for expressions (8.33% WER)
+        Apply same approach as original optimal_hybrid_aligner.py for expressions (8.33% WER).
+        Uses proper CTC collapse rules, efficient expression lookup, and log-space probability combination.
         """
         expr_probs = self.ctc_loader.get_expr_probabilities(sample_id)
         expr_vocab = self.ctc_loader.get_expr_vocabulary(sample_id)
@@ -282,61 +320,105 @@ class CorrectOptimalHybridAligner:
         full_vocab = expr_vocab + ['<BLANK>']
         blank_idx = len(expr_vocab)
         
+        # Pre-compute sign-to-time mapping for better alignment
+        # Create a mapping from expression time steps to sign indices
+        num_expr_steps = expr_probs.shape[0]
+        num_signs = len(sign_sequence)
+        sign_time_mapping = []
+        for t in range(num_expr_steps):
+            # Improved mapping: use proportional alignment
+            sign_idx = min(int(t * num_signs / num_expr_steps), num_signs - 1)
+            sign_time_mapping.append(sign_idx)
+        
         # Initialize beam search
-        beam = [([], 0.0)]  # (sequence, log_prob)
+        # Use dict to properly merge duplicate sequences (CTC collapse rule)
+        beam_dict = {tuple([]): 0.0}  # (sequence_tuple, log_prob)
         
         for t in range(expr_probs.shape[0]):
-            new_beam = []
+            new_beam_dict = {}
             
-            for sequence, log_prob in beam:
-                # Consider all possible expressions
-                for expr_idx, expr in enumerate(full_vocab):
-                    if expr == '<BLANK>':
-                        # Blank token - no change to sequence
-                        new_beam.append((sequence, log_prob + math.log(expr_probs[t, expr_idx])))
+            # Get the corresponding sign for this time step
+            sign_idx = sign_time_mapping[t]
+            current_sign = sign_sequence[sign_idx] if sign_idx < len(sign_sequence) else sign_sequence[-1]
+            
+            for sequence_tuple, log_prob in beam_dict.items():
+                sequence = list(sequence_tuple)
+                last_expr = sequence[-1] if sequence else None
+                
+                # First, handle blank token (no change to sequence)
+                blank_log_prob = log_prob + math.log(expr_probs[t, blank_idx] + 1e-10)
+                seq_key = tuple(sequence)
+                if seq_key in new_beam_dict:
+                    # Log-sum-exp for merging probabilities (numerically stable)
+                    max_prob = max(new_beam_dict[seq_key], blank_log_prob)
+                    new_beam_dict[seq_key] = max_prob + math.log(
+                        math.exp(new_beam_dict[seq_key] - max_prob) + 
+                        math.exp(blank_log_prob - max_prob)
+                    )
+                else:
+                    new_beam_dict[seq_key] = blank_log_prob
+                
+                # Then, handle all non-blank expressions
+                for expr_idx in range(len(expr_vocab)):
+                    expr = expr_vocab[expr_idx]
+                    
+                    # CTC collapse rule: skip if same as last expression
+                    if last_expr == expr:
+                        continue  # Don't add duplicate expression (CTC collapse)
+                    
+                    # Get CTC probability
+                    ctc_log_prob = math.log(expr_probs[t, expr_idx] + 1e-10)
+                    
+                    # Efficient direct lookup for expression association probability
+                    # Try exact match first (case-sensitive)
+                    assoc_prob = self.lm_rescorer.get_expression_association_prob(current_sign, expr)
+                    
+                    # If no exact match, try case-insensitive lookup using pre-built map
+                    if assoc_prob == 0.0:
+                        current_sign_upper = current_sign.upper()
+                        if current_sign_upper in self.lm_rescorer.sign_case_map:
+                            original_sign = self.lm_rescorer.sign_case_map[current_sign_upper]
+                            assoc_prob = self.lm_rescorer.get_expression_association_prob(original_sign, expr)
+                    
+                    # If still no match, use a small default probability
+                    if assoc_prob == 0.0:
+                        assoc_log_prob = math.log(0.001)
                     else:
-                        if expr_idx < len(expr_vocab):
-                            # Get CTC probability
-                            ctc_prob = expr_probs[t, expr_idx]
-                            
-                            # Get association probability with current sign
-                            # Map time step to sign (simple mapping for now)
-                            sign_idx = min(t * len(sign_sequence) // expr_probs.shape[0], len(sign_sequence) - 1)
-                            current_sign = sign_sequence[sign_idx] if sign_idx < len(sign_sequence) else sign_sequence[-1]
-                            
-                            # Try to match sign with language model vocabulary (case-insensitive)
-                            assoc_prob = 0.0
-                            for lm_sign in self.lm_rescorer.expr_associations:
-                                if lm_sign[0].upper() == current_sign.upper():
-                                    assoc_prob = self.lm_rescorer.get_expression_association_prob(lm_sign[0], expr)
-                                    break
-                            
-                            # If no exact match, use a small default probability
-                            if assoc_prob == 0.0:
-                                assoc_prob = 0.001  # Very small default probability
-                            
-                            # Sophisticated combination: weighted combination of CTC and association
-                            alpha = 0.6  # Weight for CTC probability
-                            beta = 0.4   # Weight for association probability
-                            
-                            combined_prob = alpha * ctc_prob + beta * assoc_prob
-                            new_log_prob = log_prob + math.log(combined_prob)
-                            
-                            # Add to sequence if not duplicate
-                            if not sequence or sequence[-1] != expr:
-                                new_sequence = sequence + [expr]
-                            else:
-                                new_sequence = sequence
-                            
-                            new_beam.append((new_sequence, new_log_prob))
+                        assoc_log_prob = math.log(assoc_prob)
+                    
+                    # Combine CTC and association probabilities in log space
+                    # Weighted combination: alpha * log(CTC) + beta * log(assoc)
+                    # This is equivalent to: log(CTC^alpha * assoc^beta)
+                    alpha = 0.6  # Weight for CTC probability
+                    beta = 0.4   # Weight for association probability
+                    
+                    combined_log_prob = alpha * ctc_log_prob + beta * assoc_log_prob
+                    new_log_prob = log_prob + combined_log_prob
+                    
+                    # Add expression to sequence (already checked for duplicates above)
+                    new_sequence = sequence + [expr]
+                    
+                    # Merge sequences with same content
+                    seq_key = tuple(new_sequence)
+                    if seq_key in new_beam_dict:
+                        # Log-sum-exp for merging probabilities (numerically stable)
+                        max_prob = max(new_beam_dict[seq_key], new_log_prob)
+                        new_beam_dict[seq_key] = max_prob + math.log(
+                            math.exp(new_beam_dict[seq_key] - max_prob) + 
+                            math.exp(new_log_prob - max_prob)
+                        )
+                    else:
+                        new_beam_dict[seq_key] = new_log_prob
             
-            # Keep top beam_size candidates
-            new_beam.sort(key=lambda x: x[1], reverse=True)
-            beam = new_beam[:5]  # Smaller beam for expressions
+            # Convert back to list and keep top beam_size candidates
+            beam = [(list(seq), prob) for seq, prob in new_beam_dict.items()]
+            beam.sort(key=lambda x: x[1], reverse=True)
+            beam_dict = {tuple(seq): prob for seq, prob in beam[:5]}  # Smaller beam for expressions
         
         # Return best sequence
-        if beam:
-            return beam[0][0]
+        if beam_dict:
+            best_seq = max(beam_dict.items(), key=lambda x: x[1])[0]
+            return list(best_seq)
         return []
     
     def build_enhanced_aligned_sentence(self, sign_sequence: List[str], expr_sequence: List[str]) -> str:

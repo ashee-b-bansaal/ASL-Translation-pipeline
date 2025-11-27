@@ -394,6 +394,98 @@ class TemporalAligner:
         return align_ctc_streams(sign_ctc, exp_ctc)
 
 
+def extract_emotion_from_expression(expression_str: str) -> Optional[str]:
+    """
+    Extract emotion (happy, sad, or angry) from an expression string.
+    Only returns one emotion per sentence - the first one found.
+    
+    Args:
+        expression_str: Comma-separated expression string (e.g., "angry,cs,raise" or "happy")
+    
+    Returns:
+        Emotion string ("happy", "sad", or "angry") or None if no emotion found
+    """
+    if not expression_str or not expression_str.strip():
+        return None
+    
+    expressions = [e.strip() for e in expression_str.split(',')]
+    
+    for expr in expressions:
+        if expr.lower() in EMOTION_EXPRESSIONS:
+            return expr.lower()
+    
+    return None
+
+
+def extract_recognized_emotion_with_frequency(recognized_str: str, ctc_sequence: str) -> Optional[str]:
+    """
+    Extract recognized emotion from recognized expression string.
+    If multiple emotions exist, choose the one with max frequency in CTC sequence.
+    If tie, choose the one that occurs first.
+    
+    Args:
+        recognized_str: Recognized expression string (e.g., "angry" or "angry,cs,happy")
+        ctc_sequence: CTC sequence string (e.g., "#,#,angry,angry,angry,angry,#,#,...")
+    
+    Returns:
+        Emotion string ("happy", "sad", or "angry") or None if no emotion found
+    """
+    if not recognized_str or not recognized_str.strip():
+        return None
+    
+    # Extract all emotions from recognized string
+    expressions = [e.strip() for e in recognized_str.split(',')]
+    emotions_in_recognized = [e for e in expressions if e.lower() in EMOTION_EXPRESSIONS]
+    
+    if not emotions_in_recognized:
+        return None
+    
+    # If only one emotion, return it
+    if len(emotions_in_recognized) == 1:
+        return emotions_in_recognized[0].lower()
+    
+    # Multiple emotions: count frequency in CTC sequence
+    ctc_tokens = [t.strip() for t in ctc_sequence.split(',')]
+    emotion_frequencies = {}
+    emotion_first_occurrence = {}
+    
+    for emotion in emotions_in_recognized:
+        emotion_lower = emotion.lower()
+        count = ctc_tokens.count(emotion_lower)
+        emotion_frequencies[emotion_lower] = count
+        
+        # Find first occurrence
+        try:
+            first_idx = ctc_tokens.index(emotion_lower)
+            emotion_first_occurrence[emotion_lower] = first_idx
+        except ValueError:
+            emotion_first_occurrence[emotion_lower] = float('inf')
+    
+    # Find emotion with max frequency
+    max_freq = max(emotion_frequencies.values())
+    candidates = [emotion for emotion, freq in emotion_frequencies.items() if freq == max_freq]
+    
+    # If single candidate with max frequency, return it
+    if len(candidates) == 1:
+        return candidates[0]
+    
+    # If tie, choose the one that occurs first
+    best_emotion = None
+    earliest_occurrence = float('inf')
+    
+    for emotion in candidates:
+        first_occ = emotion_first_occurrence[emotion]
+        if first_occ < earliest_occurrence:
+            earliest_occurrence = first_occ
+            best_emotion = emotion
+    
+    # If still tied (all have same first occurrence), return the first one in the recognized string
+    if best_emotion is None:
+        return emotions_in_recognized[0].lower()
+    
+    return best_emotion
+
+
 def calculate_proportional_match(gt_gloss: str, aligned_gloss: str) -> float:
     """
     Calculate proportional match score that:
@@ -505,9 +597,9 @@ def load_and_align_files(signs_file: str, exp_file: str, output_dir: str):
             gt, rec, ctc, gloss, session, sample = parse_file_line(line)
             key = f"{session},{sample}"
             exp_data[key] = {
-                'ground_truth': gt,
-                'recognized': rec,
-                'ctc_sequence': ctc,  # Emotions already replaced with #
+                'ground_truth': gt,  # Ground truth expression string (e.g., "angry,cs,raise")
+                'recognized': rec,  # Recognized expression string (e.g., "angry")
+                'ctc_sequence': ctc,  # CTC sequence (emotions may still be present)
                 'ground_truth_gloss': gloss,  # This is the ground truth ASL gloss (emotions removed)
                 'session': session,
                 'sample': sample
@@ -561,12 +653,21 @@ def load_and_align_files(signs_file: str, exp_file: str, output_dir: str):
         if exact_match:
             exact_matches += 1
         
+        # Extract emotions from expressions data
+        gt_emotion = extract_emotion_from_expression(exp_info['ground_truth'])
+        recognized_emotion = extract_recognized_emotion_with_frequency(
+            exp_info['recognized'],
+            exp_info['ctc_sequence']
+        )
+        
         results.append({
             'key': key,
             'ground_truth_gloss': gt_gloss,
             'aligned_gloss': aligned_gloss,
             'exact_match': exact_match,
-            'clean_ground_truth_gloss': clean_gt_gloss
+            'clean_ground_truth_gloss': clean_gt_gloss,
+            'ground_truth_emotion': gt_emotion if gt_emotion else 'none',
+            'recognized_emotion': recognized_emotion if recognized_emotion else 'none'
         })
     
     # Create output directory if it doesn't exist
@@ -594,9 +695,58 @@ def load_and_align_files(signs_file: str, exp_file: str, output_dir: str):
         f.write(f"   - Total samples: {len(results)}\n")
         f.write(f"   - Accuracy: {100*exact_match_rate:.2f}%\n")
     
+    # Write additional output file with emotions
+    output_file_with_emotions = output_dir_path / "alignment_with_emotion_without_LM.txt"
+    print(f"Writing alignment results with emotions to {output_file_with_emotions}...")
+    
+    # Count exact matches (both aligned sentence and emotions match)
+    exact_matches_with_emotions = 0
+    # Track sentences where sentence matches but emotions don't
+    sentence_match_emotion_mismatch = []
+    
+    with open(output_file_with_emotions, 'w', encoding='utf-8') as f:
+        for idx, result in enumerate(results, 1):
+            # Format: ground truth (without emotion) - aligned sentence --- ground truth emotion - recognized emotion
+            f.write(f"{result['clean_ground_truth_gloss']} - {result['aligned_gloss']} --- {result['ground_truth_emotion']} - {result['recognized_emotion']}\n")
+            
+            # Check if exact match: aligned sentence matches clean ground truth AND emotions match
+            if (result['clean_ground_truth_gloss'] == result['aligned_gloss'] and 
+                result['ground_truth_emotion'] == result['recognized_emotion']):
+                exact_matches_with_emotions += 1
+            
+            # Track sentences where sentence matches but emotions don't
+            elif (result['clean_ground_truth_gloss'] == result['aligned_gloss'] and 
+                  result['ground_truth_emotion'] != result['recognized_emotion']):
+                sentence_match_emotion_mismatch.append({
+                    'line': idx,
+                    'sentence': result['clean_ground_truth_gloss'],
+                    'gt_emotion': result['ground_truth_emotion'],
+                    'rec_emotion': result['recognized_emotion']
+                })
+        
+        # Write exact match accuracy at the end
+        exact_match_rate_with_emotions = exact_matches_with_emotions / len(results) if results else 0.0
+        f.write(f"\nExact Match Accuracy: {exact_matches_with_emotions}/{len(results)} = {100*exact_match_rate_with_emotions:.2f}%\n")
+        
+        # Write sentences where sentence matches but emotions don't
+        if sentence_match_emotion_mismatch:
+            f.write(f"\n" + "=" * 80 + "\n")
+            f.write(f"SENTENCES WHERE SENTENCE MATCHES BUT EMOTIONS DON'T MATCH\n")
+            f.write(f"Total: {len(sentence_match_emotion_mismatch)}\n")
+            f.write("=" * 80 + "\n\n")
+            for item in sentence_match_emotion_mismatch:
+                f.write(f"Line {item['line']}: {item['sentence']} --- GT Emotion: {item['gt_emotion']} | Recognized Emotion: {item['rec_emotion']}\n")
+        else:
+            f.write(f"\nNo sentences found where sentence matches but emotions don't match.\n")
+    
+    # Calculate rate for printing (same calculation as above)
+    exact_match_rate_with_emotions = exact_matches_with_emotions / len(results) if results else 0.0
+    
     print(f"\nDone! Processed {len(results)} samples")
     print(f"Simple Exact Match Accuracy: {exact_matches}/{len(results)} ({100*exact_match_rate:.2f}%)")
+    print(f"Exact Match Accuracy (with emotions): {exact_matches_with_emotions}/{len(results)} ({100*exact_match_rate_with_emotions:.2f}%)")
     print(f"Output file: {output_file}")
+    print(f"Output file with emotions: {output_file_with_emotions}")
 
 
 if __name__ == "__main__":
