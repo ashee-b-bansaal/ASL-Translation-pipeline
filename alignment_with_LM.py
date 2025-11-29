@@ -205,10 +205,20 @@ class CorrectOptimalHybridAligner:
         sign_lm_path: str,
         expr_lm_path: str,
         best_outputs_glosses: Optional[Dict[Tuple[str, int], str]] = None,
+        sign_alpha: float = 0.7,
+        sign_beta: float = 0.3,
+        expr_alpha: float = 0.6,
+        expr_beta: float = 0.4,
+        default_lm_prob: float = 0.001,
     ):
         self.ctc_loader = CTCProbabilityLoader(signs_dir, exprs_dir)
         self.lm_rescorer = LanguageModelRescorer(sign_lm_path, expr_lm_path)
         self.best_outputs_glosses = best_outputs_glosses or {}
+        self.sign_alpha = sign_alpha
+        self.sign_beta = sign_beta
+        self.expr_alpha = expr_alpha
+        self.expr_beta = expr_beta
+        self.default_lm_prob = default_lm_prob
     
     def enhance_sign_sequence_with_lm_only(self, sample_id: int) -> List[str]:
         """
@@ -266,15 +276,15 @@ class CorrectOptimalHybridAligner:
                     
                     # If no LM probability, use a small default
                     if lm_prob == 0.0:
-                        lm_log_prob = math.log(0.001)
+                        lm_log_prob = math.log(self.default_lm_prob)
                     else:
                         lm_log_prob = math.log(lm_prob)
                     
                     # Combine CTC and LM probabilities in log space
                     # Weighted combination: alpha * log(CTC) + beta * log(LM)
                     # This is equivalent to: log(CTC^alpha * LM^beta)
-                    alpha = 0.7  # Weight for CTC probability
-                    beta = 0.3   # Weight for LM probability
+                    alpha = self.sign_alpha  # Weight for CTC probability
+                    beta = self.sign_beta    # Weight for LM probability
                     
                     combined_log_prob = alpha * ctc_log_prob + beta * lm_log_prob
                     new_log_prob = log_prob + combined_log_prob
@@ -380,17 +390,17 @@ class CorrectOptimalHybridAligner:
                             original_sign = self.lm_rescorer.sign_case_map[current_sign_upper]
                             assoc_prob = self.lm_rescorer.get_expression_association_prob(original_sign, expr)
                     
-                    # If still no match, use a small default probability
-                    if assoc_prob == 0.0:
-                        assoc_log_prob = math.log(0.001)
-                    else:
-                        assoc_log_prob = math.log(assoc_prob)
-                    
-                    # Combine CTC and association probabilities in log space
-                    # Weighted combination: alpha * log(CTC) + beta * log(assoc)
-                    # This is equivalent to: log(CTC^alpha * assoc^beta)
-                    alpha = 0.6  # Weight for CTC probability
-                    beta = 0.4   # Weight for association probability
+                            # If still no match, use a small default probability
+                            if assoc_prob == 0.0:
+                                assoc_log_prob = math.log(self.default_lm_prob)
+                            else:
+                                assoc_log_prob = math.log(assoc_prob)
+                            
+                            # Combine CTC and association probabilities in log space
+                            # Weighted combination: alpha * log(CTC) + beta * log(assoc)
+                            # This is equivalent to: log(CTC^alpha * assoc^beta)
+                            alpha = self.expr_alpha  # Weight for CTC probability
+                            beta = self.expr_beta    # Weight for association probability
                     
                     combined_log_prob = alpha * ctc_log_prob + beta * assoc_log_prob
                     new_log_prob = log_prob + combined_log_prob
@@ -607,7 +617,18 @@ class CorrectOptimalHybridAligner:
         return enhanced_alignments, wer_results
 
 
-def process_all_folds(signs_base_dir: str, exprs_base_dir: str, sign_lm_path: str, expr_lm_path: str, output_file: str):
+def process_all_folds(
+    signs_base_dir: str, 
+    exprs_base_dir: str, 
+    sign_lm_path: str, 
+    expr_lm_path: str, 
+    output_file: str,
+    sign_alpha: float = 0.7,
+    sign_beta: float = 0.3,
+    expr_alpha: float = 0.6,
+    expr_beta: float = 0.4,
+    default_lm_prob: float = 0.001,
+):
     """
     Process all folds discovered under the provided base directories and combine results
     into a single output file.
@@ -672,6 +693,11 @@ def process_all_folds(signs_base_dir: str, exprs_base_dir: str, sign_lm_path: st
             sign_lm_path,
             expr_lm_path,
             best_outputs_glosses=best_outputs_glosses,
+            sign_alpha=sign_alpha,
+            sign_beta=sign_beta,
+            expr_alpha=expr_alpha,
+            expr_beta=expr_beta,
+            default_lm_prob=default_lm_prob,
         )
         
         # Process all samples in this fold
@@ -756,6 +782,36 @@ def main():
         default="Penultimate/final_pipeline_txt_220110/alignment/alignment_with_LM.txt",
         help="Output file path (single file with all folds combined)"
     )
+    parser.add_argument(
+        "--sign_alpha",
+        type=float,
+        default=0.7,
+        help="Weight for CTC probability in sign sequence (default: 0.7)"
+    )
+    parser.add_argument(
+        "--sign_beta",
+        type=float,
+        default=0.3,
+        help="Weight for LM probability in sign sequence (default: 0.3)"
+    )
+    parser.add_argument(
+        "--expr_alpha",
+        type=float,
+        default=0.6,
+        help="Weight for CTC probability in expression sequence (default: 0.6)"
+    )
+    parser.add_argument(
+        "--expr_beta",
+        type=float,
+        default=0.4,
+        help="Weight for LM probability in expression sequence (default: 0.4)"
+    )
+    parser.add_argument(
+        "--default_lm_prob",
+        type=float,
+        default=0.001,
+        help="Default LM probability when transition not found (default: 0.001)"
+    )
     
     args = parser.parse_args()
     
@@ -798,7 +854,18 @@ def main():
     print("=" * 60)
     
     # Process all folds and combine results
-    process_all_folds(signs_base_dir, exprs_base_dir, sign_lm_path, expr_lm_path, output_file)
+    process_all_folds(
+        signs_base_dir, 
+        exprs_base_dir, 
+        sign_lm_path, 
+        expr_lm_path, 
+        output_file,
+        sign_alpha=args.sign_alpha,
+        sign_beta=args.sign_beta,
+        expr_alpha=args.expr_alpha,
+        expr_beta=args.expr_beta,
+        default_lm_prob=args.default_lm_prob,
+    )
 
 
 if __name__ == "__main__":

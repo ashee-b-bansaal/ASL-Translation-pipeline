@@ -675,7 +675,14 @@ def analyze_file(input_path: str, output_path: str) -> None:
                     out.write("    top misclassifications: none\n")
 
                 out.write(
-                    f"{expr}: missing = {missing} / {total} = {missing_pct:.2f}%\n\n"
+                    f"{expr}: missing = {missing} / {total} = {missing_pct:.2f}%\n"
+                )
+                
+                # Calculate accuracy: 100 - misclassified - missing
+                correct = max(total - mis - missing, 0)
+                accuracy_pct = safe_pct(correct, total)
+                out.write(
+                    f"{expr}: accuracy = {correct} / {total} = {accuracy_pct:.2f}% (100 - misclassified - missing)\n\n"
                 )
 
         # Extra recognized expressions (no GT counterpart)

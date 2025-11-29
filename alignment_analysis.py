@@ -161,7 +161,15 @@ def analyze_alignment_file(input_file, output_file):
     # Ensure output directory exists
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     
-    with open(output_file, 'w', encoding='utf-8') as f:
+    # Append to file instead of overwriting
+    file_exists = os.path.exists(output_file)
+    
+    with open(output_file, 'a', encoding='utf-8') as f:
+        # Add separator if file already exists
+        if file_exists:
+            f.write("\n\n" + "=" * 80 + "\n")
+            f.write("NEW ANALYSIS RUN\n")
+            f.write("=" * 80 + "\n\n")
         f.write("=" * 80 + "\n")
         f.write("ALIGNMENT ANALYSIS - EXPRESSION OFFSET STATISTICS\n")
         f.write("=" * 80 + "\n\n")
