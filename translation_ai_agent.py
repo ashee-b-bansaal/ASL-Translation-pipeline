@@ -403,14 +403,16 @@ def main() -> None:
                                 Non-Manual Markers (NMMs):
                                 Facial Expressions (after signs):
                                 (raise) on 1st/2nd word = topicalization | elsewhere = yes/no question or "if" conditional or because clause
-                                (happy) = positive emotion
+                                (happy) = positive emotion 
                                 (sad) = negative emotion/regret
                                 (angry) = frustration/strong emotion
                                 (furrow) = WH-question marker (with WHY/WHO/WHAT/etc.)
                                 (shake) = negation ("don't/doesn't/didn't")
 
+                                If the emotions - happy, sad, angry are present in brackets, then pls dont incldue them in the translation. 
+
                                 Verb Modifiers:
-                                (cs) = recently/just completed
+                                (cs) = recently/just completed (If cs is atteched to the STORE like STORE (cs) - it becomes near store)
                                 (th) = carelessly/sloppily
                                 (mm) = routinely/normally/regularly
 
@@ -443,6 +445,11 @@ def main() -> None:
                                 Reason Clauses: I HAPPY (happy) WHY (raise) MY SON HOMEWORK FINISH (cs) → "I am happy because my son recently finished his homework"
                                     HE HERE ALONE WHY (raise) YOU LEAVE (th) → "He is here alone because you left carelessly"
                                 WH-Questions: MY MOTHER ARRIVE (th) LATE (angry) WHY (furrow) → "Why did my mother arrive late carelessly?"
+                                Mouth morphemes attached to signs can change the meaning :
+                                MY FRIEND WANT GO-OUT (happy) IF(raise) STORE (cs) OPEN → My friend wants to go out if near store is open 
+                                but if cs is atteched to OPEN : 
+                                MY FRIEND WANT (shake) GO-OUT (sad) IF(raise) STORE OPEN (cs) → My friend don't want to go out if the store is recently opened.
+
                                 
                                 Output: Provide only the fluent English translation. Capture all grammatical and emotional nuances without adding signs not in the original gloss.
                                 

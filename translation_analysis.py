@@ -465,7 +465,7 @@ def main():
     exp_file = base_dir / "final_pipeline_txt_220110" / "best_outputs" / "exp_best_outputs.txt"
     sign_file = base_dir / "final_pipeline_txt_220110" / "best_outputs" / "sign_best_outputs.txt"
     output_dir = base_dir / "final_pipeline_txt_220110" / "analysis"
-    output_file = output_dir / "translation_analysis.txt"
+    output_file = output_dir / "translation_analysis_v2.txt"
     
     # Check if input files exist
     for filepath, name in [(translation_file, "Translation"), 
